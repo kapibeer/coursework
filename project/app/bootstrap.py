@@ -65,6 +65,11 @@ class AppContainer:
             retriever=self.retriever,
             reranker=self.reranker,
             llm_client=self.llm_client,
+            retrieval_top_k=settings.fast_search_retrieval_top_k,
+            context_top_k=settings.fast_search_context_top_k,
+            clarifying_queries_limit=settings.fast_search_clarifying_queries_limit,
+            extra_retrieval_top_k=settings.fast_search_extra_retrieval_top_k,
+            rerank_top_k=settings.fast_search_rerank_top_k,
             min_confidence=settings.rag_min_confidence,
         )
         self.deep_search = DeepSearchService(
@@ -72,6 +77,14 @@ class AppContainer:
             reranker=self.reranker,
             llm_client=self.llm_client,
             max_iterations=settings.deep_search_max_iterations,
+            rule_queries_limit=settings.deep_search_rule_queries_limit,
+            entity_queries_limit=settings.deep_search_entity_queries_limit,
+            rule_top_k=settings.deep_search_rule_top_k,
+            entity_top_k=settings.deep_search_entity_top_k,
+            scope_context_top_k=settings.deep_search_scope_context_top_k,
+            extra_queries_limit=settings.deep_search_extra_queries_limit,
+            extra_top_k=settings.deep_search_extra_top_k,
+            rerank_top_k=settings.deep_search_rerank_top_k,
             min_confidence=settings.rag_min_confidence,
         )
 

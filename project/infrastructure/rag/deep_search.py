@@ -5,7 +5,23 @@ from infrastructure.rag.base_rag import BaseRAGService
 
 
 class DeepSearchService(BaseRAGService):
-    def __init__(self, retriever, reranker, llm_client, max_iterations: int = 3, min_confidence: float = 0.65) -> None:
+    def __init__(
+        self,
+        retriever,
+        reranker,
+        llm_client,
+        *,
+        max_iterations: int = 3,
+        rule_queries_limit: int = 4,
+        entity_queries_limit: int = 5,
+        rule_top_k: int = 6,
+        entity_top_k: int = 3,
+        scope_context_top_k: int = 8,
+        extra_queries_limit: int = 3,
+        extra_top_k: int = 4,
+        rerank_top_k: int = 8,
+        min_confidence: float = 0.65,
+    ) -> None:
         super().__init__(
             retriever=retriever,
             reranker=reranker,
@@ -13,13 +29,20 @@ class DeepSearchService(BaseRAGService):
             min_confidence=min_confidence,
         )
         self.max_iterations = max_iterations
+        self.rule_queries_limit = rule_queries_limit
+        self.entity_queries_limit = entity_queries_limit
+        self.rule_top_k = rule_top_k
+        self.entity_top_k = entity_top_k
+        self.scope_context_top_k = scope_context_top_k
+        self.extra_queries_limit = extra_queries_limit
+        self.extra_top_k = extra_top_k
+        self.rerank_top_k = rerank_top_k
 
     def _merge_with_entity_coverage(
         self,
         rule_groups: list[list[SearchChunk]],
         entity_groups: list[list[SearchChunk]],
         extra_groups: list[list[SearchChunk]] | None = None,
-        limit: int = 18,
         entity_min_per_group: int = 1,
     ) -> list[SearchChunk]:
         extra_groups = extra_groups or []
@@ -42,15 +65,11 @@ class DeepSearchService(BaseRAGService):
                     added += 1
                 if added >= entity_min_per_group:
                     break
-                if len(merged) >= limit:
-                    return merged
 
         for groups in (rule_groups, entity_groups, extra_groups):
             for group in groups:
                 for chunk in group:
                     add_chunk(chunk)
-                    if len(merged) >= limit:
-                        return merged
 
         return merged
 
@@ -162,14 +181,14 @@ class DeepSearchService(BaseRAGService):
             "entity_queries": [],
         }
 
-        rule_queries = plan.get("rule_queries", [])[:4] or [question]
-        entity_queries = plan.get("entity_queries", [])[:5]
+        rule_queries = plan.get("rule_queries", [])[: self.rule_queries_limit] or [question]
+        entity_queries = plan.get("entity_queries", [])[: self.entity_queries_limit]
 
         rule_groups: list[list[SearchChunk]] = []
         await self._notify_status(status_callback, "📚 Ищу пункты правил, связанные с вопросом…")
         for query in rule_queries:
-            chunks = await self.retriever.search(game_title=game_title, query=query, top_k=18)
-            rule_groups.append(chunks[:6])
+            chunks = await self.retriever.search(game_title=game_title, query=query, top_k=self.rule_top_k)
+            rule_groups.append(chunks)
 
         entity_groups: list[list[SearchChunk]] = []
         await self._notify_status(status_callback, "🧩 Собираю сведения по ключевым сущностям и компонентам…")
@@ -177,27 +196,30 @@ class DeepSearchService(BaseRAGService):
             query = (item.get("query", "") or "").strip()
             if not query:
                 continue
-            chunks = await self.retriever.search(game_title=game_title, query=query, top_k=8)
-            entity_groups.append(chunks[:3])
+            chunks = await self.retriever.search(
+                game_title=game_title,
+                query=query,
+                top_k=self.entity_top_k,
+            )
+            entity_groups.append(chunks)
 
         all_extra_groups: list[list[SearchChunk]] = []
         merged = self._merge_with_entity_coverage(
             rule_groups=rule_groups,
             entity_groups=entity_groups,
             extra_groups=all_extra_groups,
-            limit=18,
             entity_min_per_group=1,
         )
 
         await self._notify_status(status_callback, "🧭 Проверяю, туда ли ведут найденные фрагменты правил…")
         scope_raw = await self.llm_client.generate(
-            self._build_scope_prompt(
-                game_title=game_title,
-                question=question,
-                context="\n\n".join(chunk.text for chunk in merged[:8]),
-            ),
-            model=model,
-        )
+                self._build_scope_prompt(
+                    game_title=game_title,
+                    question=question,
+                    context="\n\n".join(chunk.text for chunk in merged[: self.scope_context_top_k]),
+                ),
+                model=model,
+            )
         scope = self._parse_json(scope_raw) or {"is_relevant": True}
         if not scope.get("is_relevant", True):
             return RagAnswer(
@@ -234,9 +256,13 @@ class DeepSearchService(BaseRAGService):
 
             extra_groups: list[list[SearchChunk]] = []
             await self._notify_status(status_callback, "🕯️ Поднимаю дополнительные свитки и уточняю детали…")
-            for extra_query in context_check.get("extra_queries", [])[:3]:
-                chunks = await self.retriever.search(game_title=game_title, query=extra_query, top_k=12)
-                extra_groups.append(chunks[:4])
+            for extra_query in context_check.get("extra_queries", [])[: self.extra_queries_limit]:
+                chunks = await self.retriever.search(
+                    game_title=game_title,
+                    query=extra_query,
+                    top_k=self.extra_top_k,
+                )
+                extra_groups.append(chunks)
             if not extra_groups:
                 break
             all_extra_groups.extend(extra_groups)
@@ -244,12 +270,11 @@ class DeepSearchService(BaseRAGService):
                 rule_groups=rule_groups,
                 entity_groups=entity_groups,
                 extra_groups=all_extra_groups,
-                limit=18,
                 entity_min_per_group=1,
             )
 
         await self._notify_status(status_callback, "🎯 Отбираю самые сильные фрагменты перед финальным ответом…")
-        final_chunks = await self.reranker.rerank(question, merged, top_k=8)
+        final_chunks = await self.reranker.rerank(question, merged, top_k=self.rerank_top_k)
         final_context = "\n\n".join(chunk.text for chunk in final_chunks)
         final_check_raw = await self.llm_client.generate(
             self._build_context_check_prompt(
