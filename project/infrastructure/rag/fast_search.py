@@ -5,6 +5,30 @@ from infrastructure.rag.base_rag import BaseRAGService
 
 
 class FastSearchService(BaseRAGService):
+    def __init__(
+        self,
+        retriever,
+        reranker,
+        llm_client,
+        *,
+        retrieval_top_k: int = 20,
+        context_top_k: int = 8,
+        clarifying_queries_limit: int = 3,
+        extra_retrieval_top_k: int = 12,
+        rerank_top_k: int = 5,
+        min_confidence: float = 0.65,
+    ) -> None:
+        super().__init__(
+            retriever=retriever,
+            reranker=reranker,
+            llm_client=llm_client,
+            min_confidence=min_confidence,
+        )
+        self.retrieval_top_k = retrieval_top_k
+        self.context_top_k = context_top_k
+        self.clarifying_queries_limit = clarifying_queries_limit
+        self.extra_retrieval_top_k = extra_retrieval_top_k
+        self.rerank_top_k = rerank_top_k
 
     def _build_sufficiency_prompt(self, question: str, context: str) -> str:
         return f"""
@@ -65,8 +89,12 @@ class FastSearchService(BaseRAGService):
         status_callback: Callable[[str], Awaitable[None]] | None = None,
     ) -> RagAnswer:
         await self._notify_status(status_callback, "🔎 Рыскаю в священных писаниях и ищу нужные правила…")
-        first_pass_chunks = await self.retriever.search(game_title=game_title, query=question, top_k=20)
-        first_context = "\n\n".join(chunk.text for chunk in first_pass_chunks[:8])
+        first_pass_chunks = await self.retriever.search(
+            game_title=game_title,
+            query=question,
+            top_k=self.retrieval_top_k,
+        )
+        first_context = "\n\n".join(chunk.text for chunk in first_pass_chunks[: self.context_top_k])
 
         await self._notify_status(status_callback, "🧭 Сверяю формулировку вопроса с летописями игры…")
         scope_raw = await self.llm_client.generate(
@@ -95,17 +123,17 @@ class FastSearchService(BaseRAGService):
         candidate_groups = [first_pass_chunks]
         if not sufficiency.get("enough_context", True):
             await self._notify_status(status_callback, "🗺️ Уточняю запрос и собираю дополнительные фрагменты…")
-            for clarifying_query in sufficiency.get("clarifying_queries", [])[:3]:
+            for clarifying_query in sufficiency.get("clarifying_queries", [])[: self.clarifying_queries_limit]:
                 extra_chunks = await self.retriever.search(
                     game_title=game_title,
                     query=clarifying_query,
-                    top_k=12,
+                    top_k=self.extra_retrieval_top_k,
                 )
                 candidate_groups.append(extra_chunks)
 
         await self._notify_status(status_callback, "🎲 Перетасовываю найденные фрагменты и выбираю самые полезные…")
-        final_candidates = self._merge_chunks(candidate_groups, limit=24)
-        final_chunks = await self.reranker.rerank(question, final_candidates, top_k=5)
+        final_candidates = self._merge_chunks(candidate_groups)
+        final_chunks = await self.reranker.rerank(question, final_candidates, top_k=self.rerank_top_k)
         final_context = "\n\n".join(chunk.text for chunk in final_chunks)
         final_check_raw = await self.llm_client.generate(
             self._build_sufficiency_prompt(question, final_context),

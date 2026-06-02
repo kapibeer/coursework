@@ -31,7 +31,7 @@ class BaseRAGService:
         text = unicodedata.normalize("NFKC", str(text))
         return text.lower().replace("ё", "е")
 
-    def _merge_chunks(self, chunk_groups: list[list[SearchChunk]], limit: int) -> list[SearchChunk]:
+    def _merge_chunks(self, chunk_groups: list[list[SearchChunk]]) -> list[SearchChunk]:
         merged: list[SearchChunk] = []
         seen: set[str] = set()
 
@@ -42,8 +42,6 @@ class BaseRAGService:
                     continue
                 seen.add(key)
                 merged.append(chunk)
-                if len(merged) >= limit:
-                    return merged
 
         return merged
 
